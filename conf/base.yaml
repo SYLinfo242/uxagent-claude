@@ -25,6 +25,10 @@ environment:
   # - url: "https://staging.example.com/**"
   #   headers: {Authorization: "Basic ${oc.env:STAGING_AUTH}"}
   route_headers: []
+
+  # Hosts agents may navigate to (empty = any). Navigations elsewhere are
+  # aborted, e.g. ["staging.example.com"] keeps agents off production.
+  allowed_hosts: []
   # Put site-specific values in a separate YAML and point UXAGENT_CONFIG at it;
   # it is merged over this file.
 

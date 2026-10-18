@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable, ClassVar, Optional
 
 import numpy
@@ -538,8 +539,23 @@ class WebAgentEnv:
 
             await self.context.route(_url_pattern(rule.url), add_headers)
 
+        # Keep agents on the site under test: page navigations to any other
+        # host are aborted (sub-resources such as CDN images still load).
+        allowed_hosts = list(self.config.get("allowed_hosts") or [])
+        if allowed_hosts:
+
+            async def guard_navigation(route, request):
+                host = urlparse(request.url).hostname or ""
+                if request.is_navigation_request() and host not in allowed_hosts:
+                    self.logger.warning(f"Blocked navigation to {request.url}")
+                    await route.abort()
+                else:
+                    await route.fallback()
+
+            await self.context.route("**/*", guard_navigation)
+
         # Abort requests the agent must never send (e.g. order confirmation).
-        # Registered last so it runs before the header rules.
+        # Registered last so it runs before the header and host rules.
         for pattern in self.config.get("block_urls") or []:
             self.logger.info(f"Blocking requests matching {pattern}")
             await self.context.route(_url_pattern(pattern), lambda route: route.abort())
