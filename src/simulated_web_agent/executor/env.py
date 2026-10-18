@@ -3,6 +3,7 @@ import base64
 import contextlib
 import inspect
 import logging
+import re
 import time
 import uuid
 from pathlib import Path
@@ -292,6 +293,11 @@ class ElementHighlight:
         await asyncio.sleep(sleep_time)
 
 
+def _url_pattern(pattern: str):
+    """Playwright URL glob, or a regex when prefixed with "re:"."""
+    return re.compile(pattern[3:]) if pattern.startswith("re:") else pattern
+
+
 class WebAgentEnv:
     _shared_playwright: ClassVar[Playwright | None] = None
     _shared_playwright_users: ClassVar[int] = 0
@@ -522,10 +528,21 @@ class WebAgentEnv:
         # Set default timeout for all locator actions
         self.context.set_default_timeout(self.config.browser.timeouts.default)
 
-        # Abort requests the agent must never send (e.g. order confirmation)
+        # Extra headers only for matching URLs (e.g. staging auth tokens that
+        # must not leak to third-party scripts)
+        for rule in self.config.get("route_headers") or []:
+            headers = dict(rule.headers)
+
+            async def add_headers(route, request, headers=headers):
+                await route.continue_(headers={**request.headers, **headers})
+
+            await self.context.route(_url_pattern(rule.url), add_headers)
+
+        # Abort requests the agent must never send (e.g. order confirmation).
+        # Registered last so it runs before the header rules.
         for pattern in self.config.get("block_urls") or []:
             self.logger.info(f"Blocking requests matching {pattern}")
-            await self.context.route(pattern, lambda route: route.abort())
+            await self.context.route(_url_pattern(pattern), lambda route: route.abort())
 
         # Add init script if it exists
         init_script_path = Path(self.config.init_script_path)

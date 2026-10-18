@@ -16,9 +16,17 @@ environment:
   sites:
     shopping: "https://www.amazon.com/"
 
-  # Playwright URL globs aborted before they leave the browser, so agents cannot
-  # place real orders, e.g. ["**/checkout/confirm**", "**/payment/**"]
+  # URL patterns (Playwright globs, or regex with a "re:" prefix) aborted before
+  # they leave the browser, so agents cannot place real orders,
+  # e.g. ["**/checkout/confirm**", "re:route=extension(/|%2F)payment"]
   block_urls: []
+
+  # Extra request headers only for matching URLs, e.g. staging auth:
+  # - url: "https://staging.example.com/**"
+  #   headers: {Authorization: "Basic ${oc.env:STAGING_AUTH}"}
+  route_headers: []
+  # Put site-specific values in a separate YAML and point UXAGENT_CONFIG at it;
+  # it is merged over this file.
 
   init_script_path: "src/simulated_web_agent/executor/parser/initscript.js"   # Path to JavaScript init script
   parser_script_path: "src/simulated_web_agent/executor/parser/parser.js"     # Path to JavaScript parser script

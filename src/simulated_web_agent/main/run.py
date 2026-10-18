@@ -117,7 +117,9 @@ def run(*args, **kwargs):
 
 
 if __name__ == "__main__":
-    cfg = load_config("conf/runConfig.yaml")
+    import sys
+
+    cfg = load_config(sys.argv[1] if len(sys.argv) > 1 else "conf/runConfig.yaml")
     asyncio.run(
         run_async(
             total_personas=cfg.get("total_personas", 8),

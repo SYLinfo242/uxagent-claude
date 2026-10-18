@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import pathlib
 import shutil
 import traceback
@@ -10,7 +11,7 @@ from typing import Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
 from hydra import compose, initialize, initialize_config_dir
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from ..agent import context, gpt
 from ..executor.env import WebAgentEnv  # Playwright env
@@ -205,6 +206,10 @@ def _load_cfg(config_name: str = "base"):
     conf_dir = here.parents[2] / "conf"
     with initialize_config_dir(version_base=None, config_dir=str(conf_dir)):
         cfg = compose(config_name=config_name)
+    # site-specific settings (block_urls, route_headers, ...) kept outside the repo
+    override = os.environ.get("UXAGENT_CONFIG")
+    if override:
+        cfg = OmegaConf.merge(cfg, OmegaConf.load(override))
     return cfg
 
 async def experiment_async(
