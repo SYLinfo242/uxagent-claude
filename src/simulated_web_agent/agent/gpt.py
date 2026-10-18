@@ -268,18 +268,56 @@ _claude_cli_slots = asyncio.Semaphore(
 )
 
 
-async def _async_chat_claude_cli(messages, model: str) -> str:
-    args, prompt = _claude_cli_args(messages, model)
-    async with _claude_cli_slots:
-        proc = await asyncio.create_subprocess_exec(
+# Warm single-use `claude` processes keyed by argv (model + system prompt).
+# A stream-json process waits for its input indefinitely, so starting it ahead
+# of time hides the ~2s CLI start-up. Idle ones exit when we exit (stdin EOF).
+_claude_cli_pool: dict[tuple, asyncio.Future] = {}
+
+
+def _spawn_claude_cli(args: list[str]) -> asyncio.Future:
+    return asyncio.ensure_future(
+        asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=claude_cli_cwd,
+            limit=2**24,  # stream-json lines can be large
         )
-        stdout, stderr = await proc.communicate(prompt.encode())
-    return _claude_cli_result(stdout, stderr, proc.returncode)
+    )
+
+
+async def _async_chat_claude_cli(messages, model: str) -> str:
+    args, prompt = _claude_cli_args(messages, model)
+    fmt = args.index("--output-format")
+    args[fmt : fmt + 2] = [
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
+    key = tuple(args)
+    async with _claude_cli_slots:
+        proc = await (_claude_cli_pool.pop(key, None) or _spawn_claude_cli(args))
+        if key not in _claude_cli_pool:
+            _claude_cli_pool[key] = _spawn_claude_cli(args)
+        message = {"type": "user", "message": {"role": "user", "content": prompt}}
+        proc.stdin.write((json.dumps(message) + "\n").encode())
+        await proc.stdin.drain()
+        result = None
+        async for line in proc.stdout:
+            event = json.loads(line)
+            if event.get("type") == "result":
+                result = event
+                break
+        proc.stdin.close()
+        _, stderr = await proc.communicate()
+    if result is None:
+        raise Exception(f"claude -p failed ({proc.returncode}): {stderr.decode()[-500:]}")
+    if result.get("is_error"):
+        raise Exception(f"claude -p error: {result.get('result')}")
+    return result["result"]
 
 
 def _chat_claude_cli(messages, model: str) -> str:
