@@ -522,6 +522,11 @@ class WebAgentEnv:
         # Set default timeout for all locator actions
         self.context.set_default_timeout(self.config.browser.timeouts.default)
 
+        # Abort requests the agent must never send (e.g. order confirmation)
+        for pattern in self.config.get("block_urls") or []:
+            self.logger.info(f"Blocking requests matching {pattern}")
+            await self.context.route(pattern, lambda route: route.abort())
+
         # Add init script if it exists
         init_script_path = Path(self.config.init_script_path)
         if init_script_path.exists():

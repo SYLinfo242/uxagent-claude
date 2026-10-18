@@ -1,5 +1,10 @@
 import asyncio
+import hashlib
 import json
+import os
+import re
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, cast
@@ -22,7 +27,17 @@ from litellm.router import Router
 
 from . import context
 
-provider = "openai"  # "openai" or "aws" or "anthropic"
+provider = "openai"  # "openai" or "aws" or "anthropic" or "claude_cli"
+
+# claude_cli provider: every chat call runs a headless `claude -p` (Claude Code
+# subscription, no API key). Models are Claude Code aliases, override via env.
+claude_cli_models = {
+    "small": os.environ.get("UXAGENT_CLAUDE_SMALL_MODEL", "haiku"),
+    "large": os.environ.get("UXAGENT_CLAUDE_LARGE_MODEL", "sonnet"),
+}
+claude_cli_bin = os.environ.get("UXAGENT_CLAUDE_BIN", "claude")
+# empty cwd so no project CLAUDE.md is picked up
+claude_cli_cwd = tempfile.mkdtemp(prefix="uxagent-claude-")
 
 prompt_dir = Path(__file__).parent.absolute() / "shop_prompts"
 
@@ -47,7 +62,7 @@ chat_router = Router(
         {
             "model_name": "anthropic",
             "litellm_params": {
-                "model": "claude-sonnet-4-20250514",
+                "model": "anthropic/claude-sonnet-4-20250514",
             },
         },
         {
@@ -70,7 +85,7 @@ chat_router = Router(
         {
             "model_name": "anthropic_thinking",
             "litellm_params": {
-                "model": "claude-sonnet-4-20250514",
+                "model": "anthropic/claude-sonnet-4-20250514",
                 "thinking": {
                     "type": "enabled",
                     "budget_tokens": 32000,
@@ -98,7 +113,7 @@ slow_chat_router = Router(
         {
             "model_name": "anthropic",
             "litellm_params": {
-                "model": "claude-sonnet-4-20250514",
+                "model": "anthropic/claude-sonnet-4-20250514",
             },
         },
         {
@@ -118,7 +133,7 @@ slow_chat_router = Router(
         {
             "model_name": "anthropic_thinking",
             "litellm_params": {
-                "model": "claude-sonnet-4-20250514",
+                "model": "anthropic/claude-sonnet-4-20250514",
                 "thinking": {
                     "type": "enabled",
                     "budget_tokens": 32000,
@@ -200,6 +215,92 @@ def retry(times=10):
     return func_wrapper
 
 
+def _claude_cli_args(messages, model: str) -> tuple[list[str], str]:
+    """
+    Build `claude -p` argv and stdin from OpenAI-style messages.
+    System messages become the system prompt; the rest is sent as one transcript.
+    """
+    system_parts, turns = [], []
+    for m in messages:
+        content = m["content"]
+        if isinstance(content, list):
+            content = "\n".join(p.get("text", "") for p in content)
+        if m["role"] == "system":
+            system_parts.append(content)
+        else:
+            turns.append((m["role"], content))
+    if len(turns) == 1:
+        prompt = turns[0][1]
+    else:
+        prompt = "\n\n".join(f"<{role}>\n{text}\n</{role}>" for role, text in turns)
+    args = [
+        claude_cli_bin,
+        "-p",
+        "--model",
+        claude_cli_models["small" if model == "small" else "large"],
+        "--output-format",
+        "json",
+        "--tools",
+        "",
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--system-prompt",
+        "\n\n".join(system_parts) or "You are a helpful assistant.",
+    ]
+    return args, prompt
+
+
+def _claude_cli_result(stdout: bytes, stderr: bytes, returncode: int) -> str:
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        raise Exception(f"claude -p failed ({returncode}): {stderr.decode()[-500:]}")
+    if data.get("is_error"):
+        raise Exception(f"claude -p error: {data.get('result')}")
+    return data["result"]
+
+
+_claude_cli_slots = asyncio.Semaphore(
+    int(os.environ.get("UXAGENT_CLAUDE_CONCURRENCY", "4"))
+)
+
+
+async def _async_chat_claude_cli(messages, model: str) -> str:
+    args, prompt = _claude_cli_args(messages, model)
+    async with _claude_cli_slots:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=claude_cli_cwd,
+        )
+        stdout, stderr = await proc.communicate(prompt.encode())
+    return _claude_cli_result(stdout, stderr, proc.returncode)
+
+
+def _chat_claude_cli(messages, model: str) -> str:
+    args, prompt = _claude_cli_args(messages, model)
+    proc = subprocess.run(
+        args, input=prompt.encode(), capture_output=True, cwd=claude_cli_cwd
+    )
+    return _claude_cli_result(proc.stdout, proc.stderr, proc.returncode)
+
+
+def _hash_embed(text: str, dim: int = 512) -> list[float]:
+    # ponytail: hashed bag-of-words, no semantic similarity; swap for a real
+    # embedding model if memory retrieval quality matters.
+    vec = [0.0] * dim
+    for token in re.findall(r"\w+", text.lower()):
+        h = int.from_bytes(hashlib.md5(token.encode()).digest()[:4], "little")
+        vec[h % dim] += 1.0
+    norm = sum(v * v for v in vec) ** 0.5 or 1.0
+    return [v / norm for v in vec]
+
+
 def _extract_json_string(text: str) -> str:
     import regex
 
@@ -244,29 +345,32 @@ async def async_chat(
     if context.api_call_manager.get() and log:
         context.api_call_manager.get().request.append(messages)
 
-    router = chat_router if model == "small" else slow_chat_router
-    call_kwargs: Dict[str, Any] = dict(**kwargs)
-    if enable_thinking:
-        router_model = provider + "_thinking"
+    if provider == "claude_cli":
+        content = await _async_chat_claude_cli(messages, model)
     else:
-        router_model = provider
-    if json_mode and provider == "openai":
-        call_kwargs["response_format"] = {"type": "json_object"}
-    response = await router.acompletion(
-        model=router_model,
-        messages=messages,
-        max_tokens=max_tokens,
-        drop_params=True,  # do not forward unused params, such as thinking for openai
-        **call_kwargs,
-        tools=None,
-    )
-    content = response.choices[0].message.get("content", "")
+        router = chat_router if model == "small" else slow_chat_router
+        call_kwargs: Dict[str, Any] = dict(**kwargs)
+        if enable_thinking:
+            router_model = provider + "_thinking"
+        else:
+            router_model = provider
+        if json_mode and provider == "openai":
+            call_kwargs["response_format"] = {"type": "json_object"}
+        response = await router.acompletion(
+            model=router_model,
+            messages=messages,
+            max_tokens=max_tokens,
+            drop_params=True,  # do not forward unused params, such as thinking for openai
+            **call_kwargs,
+            tools=None,
+        )
+        content = response.choices[0].message.get("content", "")
 
-    finish_reason = response.choices[0].finish_reason
-    if finish_reason != "stop":
-        print("finish_reason:", finish_reason)
-        print("content:", content)
-        print("response:", response)
+        finish_reason = response.choices[0].finish_reason
+        if finish_reason != "stop":
+            print("finish_reason:", finish_reason)
+            print("content:", content)
+            print("response:", response)
     # tokens_used = token_counter(model="openai/gpt-5-mini", text=content)
     # print("Output tokens:", tokens_used)
 
@@ -303,6 +407,9 @@ def chat(
         String output of the LLM model
     """
 
+    if provider == "claude_cli":
+        return _chat_claude_cli(messages, model)
+
     router = chat_router if model == "small" else slow_chat_router
     call_kwargs: Dict[str, Any] = dict(**kwargs)
     if enable_thinking:
@@ -336,6 +443,8 @@ async def embed_text(texts: list[str]) -> list[list[float]]:
     Returns:
         List of list[float] representing each of the embedded texts
     """
+    if provider == "claude_cli":
+        return [_hash_embed(t) for t in texts]
     try:
         response = await embed_router.aembedding(model=provider, input=texts)
         return [e["embedding"] for e in response.data]

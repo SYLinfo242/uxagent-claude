@@ -18,6 +18,31 @@ Yuxuan Lu, Bingsheng Yao, Hansu Gu, Jing Huang, Jessie Wang, Laurence Li, Haiyan
 </p>
 
 
+> **This is a fork: `uxagent-claude`.** It runs UXAgent on a Claude Code
+> subscription through headless `claude -p` — no API key needed. Upstream:
+> [neuhai/UXAgent](https://github.com/neuhai/UXAgent).
+>
+> - `llm_provider: claude_cli` (default; set `UXAGENT_LLM_PROVIDER` to switch back
+>   to `openai` / `aws` / `anthropic`). Requires the `claude` CLI, logged in.
+> - Models: `UXAGENT_CLAUDE_SMALL_MODEL` (default `haiku`) and
+>   `UXAGENT_CLAUDE_LARGE_MODEL` (default `sonnet`); parallel `claude -p`
+>   processes: `UXAGENT_CLAUDE_CONCURRENCY` (default 4).
+> - Embeddings for memory retrieval use a local hashed bag-of-words (no extra
+>   service), so retrieval is keyword-based rather than semantic.
+> - `environment.block_urls`: Playwright URL globs aborted in the browser, so
+>   agents testing a real shop cannot place orders.
+> - Each step makes several LLM calls and every `claude -p` call has a few
+>   seconds of start-up, so expect minutes per persona and dozens (not
+>   thousands) of personas per run on a subscription.
+>
+> ```bash
+> uv sync && uv run playwright install chromium
+> uv run python -m simulated_web_agent.main --headless \
+>   --start-url "https://books.toscrape.com/" \
+>   --intent "Find a mystery book under 20 pounds and add it to the basket." \
+>   --max-steps 6
+> ```
+
 ## Overview
 **UXAgent** is a framework that uses Large Language Models (LLMs) as agents to conduct usability testing in web environments. These agents simulate human-like behaviors, allowing UX researchers to:
 - Perform early usability evaluations.

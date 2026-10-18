@@ -16,6 +16,10 @@ environment:
   sites:
     shopping: "https://www.amazon.com/"
 
+  # Playwright URL globs aborted before they leave the browser, so agents cannot
+  # place real orders, e.g. ["**/checkout/confirm**", "**/payment/**"]
+  block_urls: []
+
   init_script_path: "src/simulated_web_agent/executor/parser/initscript.js"   # Path to JavaScript init script
   parser_script_path: "src/simulated_web_agent/executor/parser/parser.js"     # Path to JavaScript parser script
 
@@ -92,7 +96,7 @@ survey:
 # LLM CONFIGURATION
 # ============================================================================
 # Large Language Model provider settings
-llm_provider: "aws"     # Provider: "openai" or "aws" or "anthropic"
+llm_provider: ${oc.env:UXAGENT_LLM_PROVIDER,claude_cli}  # "claude_cli" (Claude Code subscription via `claude -p`), "openai", "aws" or "anthropic"
 
 # ============================================================================
 # GENERAL SETTINGS
