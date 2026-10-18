@@ -70,11 +70,11 @@ environment:
       page_load_domcontent: 10000 # Timeout for DOM content loaded
       page_load_networkidle: 3000 # Timeout for network idle (longer for full page loads)
       element_wait: 2000          # Timeout for waiting for specific elements
-      custom_network_idle: 3000    # Time to wait for no network activity before considering idle
+      custom_network_idle: 1000    # Time to wait for no network activity before considering idle
       container_health_check: 3000 # Timeout for container health checks (in milliseconds)
 
     # Sleep configuration (in seconds)
-    sleep_after_action: 2      # Sleep time after each action (helps with page stability)
+    sleep_after_action: 0.5      # Sleep time after each action (helps with page stability)
 
   # Browser tracing for debugging and analysis
   tracing:

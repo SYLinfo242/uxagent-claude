@@ -91,30 +91,43 @@ class Memory:
                 memory_to_update = self.memories[start_idx:]
                 if not memory_to_update:
                     return np.array([]), 0
-                requests = [
-                    [
-                        {"role": "system", "content": MEMORY_IMPORTANCE_PROMPT},
-                        {
-                            "role": "user",
-                            "content": json.dumps(
-                                {
-                                    "persona": self.agent.persona,
-                                    "intent": self.agent.intent,
-                                    "memory": m.content,
-                                    "plan": self.agent.current_plan.content
-                                    if self.agent.current_plan
-                                    else None,
-                                }
-                            ),
-                        },
-                    ]
-                    for m in memory_to_update
+                # one call scores the whole batch instead of one call per memory
+                request = [
+                    {
+                        "role": "system",
+                        "content": MEMORY_IMPORTANCE_PROMPT
+                        + "\n\nYou will be given a list of memories instead of one. "
+                        'Score each one and output {"scores": [<integer score>, ...]} '
+                        "with exactly one score per memory, in the same order.",
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "persona": self.agent.persona,
+                                "intent": self.agent.intent,
+                                "memories": [m.content for m in memory_to_update],
+                                "plan": self.agent.current_plan.content
+                                if self.agent.current_plan
+                                else None,
+                            }
+                        ),
+                    },
                 ]
-                responses = await asyncio.gather(
-                    *[async_chat(r, json_mode=True, log=False) for r in requests]
-                )
-                new_importance = [json.loads(r)["score"] for r in responses]
-                new_importance = np.array(new_importance) / 10
+                response = await async_chat(request, json_mode=True, log=False)
+                scores = [
+                    s["score"] if isinstance(s, dict) else s
+                    for s in json.loads(response)["scores"]
+                ]
+                if len(scores) != len(memory_to_update):
+                    logger.warning(
+                        f"Got {len(scores)} importance scores for "
+                        f"{len(memory_to_update)} memories; using 5 for missing"
+                    )
+                    scores = (scores + [5] * len(memory_to_update))[
+                        : len(memory_to_update)
+                    ]
+                new_importance = np.array(scores, dtype=float) / 10
                 for i, m in enumerate(memory_to_update):
                     m.importance = new_importance[i]
                 return new_importance, len(memory_to_update)
